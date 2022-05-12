@@ -1,0 +1,413 @@
+import numpy as np
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
+from matplotlib.widgets import Slider, Button, RadioButtons
+
+"""
+------------------Constants and Variables------------------
+"""
+
+#constants and such         
+POS = np.zeros((1,3))
+V = np.zeros((1,3))
+ACL = np.zeros((1,3))
+ROT = np.zeros((1,3))
+ANG = np.zeros((1,3))
+T = np.zeros(0)
+
+
+#ground coordinates
+pos_g = np.zeros(3)
+pos_g[2] = 1.5 #starting height
+vel_g = np.zeros(3)
+acl_g = np.zeros(3)
+angles_g = np.zeros(3)
+rot_g = np.zeros(3)
+
+#disc coordinates
+vel_d = np.zeros(3)
+acl_d = np.zeros(3)
+rot_d = np.zeros(3)
+beta = 0
+g_d = np.zeros(3)
+
+#slip coordinates
+vel_s = np.zeros(3)
+acl_s = np.zeros(3)
+rot_s = np.zeros(3)
+alpha = 0
+g_s = np.zeros(3)
+
+#wind coordinates
+vel_w = np.zeros(3)
+acl_w = np.zeros(3)
+g_w = np.zeros(3)
+
+#aerodynamic forces
+drag = np.zeros(3)
+lift = np.zeros(3)
+mom = np.zeros(3)
+
+#constants
+rho = 1.23 #density
+g = np.array([0,0,-9.8]) #gravity
+m = 0.175 #mass
+A = 0.0531 #area
+r = np.sqrt(A/np.pi) #radius
+Iz = (1/8)*m*r**2 #moment of inertia
+
+global omega, s
+omega = 20*np.pi #spin of disc
+s = 1 #backhand or flick
+
+#constants taken from The Aerodynamics of Frisbee Flight by Kathleen Baumback
+C_L0 = 0.15
+C_La = 1.4
+C_D0 = 0.08
+C_Da = 2.72
+alpha_0 = -4*np.pi/180
+
+t = 0
+h = 0.01
+
+"""
+------------------Transformation Functions------------------
+"""
+
+def T_gd(angles):
+  phi = angles[0]
+  theta = angles[1]
+  psi = angles[2]
+  return np.array([[np.cos(theta)*np.cos(psi), np.sin(phi)*np.sin(theta)*np.cos(psi) - np.cos(phi)*np.sin(psi), np.cos(phi)*np.sin(theta)*np.cos(psi) + np.sin(phi)*np.sin(psi)],
+                   [np.cos(theta)*np.sin(psi), np.sin(phi)*np.sin(theta)*np.sin(psi) + np.cos(phi)*np.cos(psi), np.cos(phi)*np.sin(theta)*np.sin(psi) - np.sin(phi)*np.cos(psi)],
+                   [-np.sin(theta),            np.sin(phi)*np.cos(theta),                                       np.cos(phi)*np.cos(theta)                                      ]])
+
+def T_dg(angles):
+  phi = angles[0]
+  theta = angles[1]
+  psi = angles[2]
+  return np.array([[np.cos(theta)*np.cos(psi),                                      np.cos(theta)*np.sin(psi),                                      -np.sin(theta)            ],
+                    [np.sin(phi)*np.sin(theta)*np.cos(psi) - np.cos(phi)*np.sin(psi), np.sin(phi)*np.sin(theta)*np.sin(psi) + np.cos(phi)*np.cos(psi), np.sin(phi)*np.cos(theta)],
+                    [np.cos(phi)*np.sin(theta)*np.cos(psi) + np.sin(phi)*np.sin(psi), np.cos(phi)*np.sin(theta)*np.sin(psi) - np.sin(phi)*np.cos(psi), np.cos(phi)*np.cos(theta)]])
+
+def T_ds(beta):
+  return np.array([[np.cos(beta), -np.sin(beta), 0],
+                   [np.sin(beta),  np.cos(beta), 0],
+                   [0,             0,            1]])
+
+def T_sd(beta):
+  return np.array([[np.cos(beta),  np.sin(beta), 0],
+                   [-np.sin(beta), np.cos(beta), 0],
+                   [0,             0,            1]])
+
+def T_sw(alpha):
+  return np.array([[np.cos(alpha), 0, -np.sin(alpha)],
+                   [0,             1, 0            ],
+                   [np.sin(alpha), 0, np.cos(alpha)]])
+
+def T_ws(alpha):
+  return np.array([[np.cos(alpha), 0, np.sin(alpha)],
+                   [0,             1, 0            ],
+                   [-np.sin(alpha), 0, np.cos(alpha)]])
+
+"""
+------------------Calculate Aero Dynamic Forces------------------
+"""
+    
+def Aero(vel_g, angles_g):
+    #transform to wind coordinates and define alpha and beta
+    vel_d = np.matmul(T_gd(angles_g), vel_g)
+    beta = -np.arctan2(vel_d[1],vel_d[0]) #maybe negative???
+    vel_s = np.matmul(T_ds(beta), vel_d)
+    alpha = -np.arctan2(vel_s[2],vel_s[0])
+    vel_w = np.matmul(T_sw(alpha), vel_s)
+    
+    #transform gravity to wind
+    g_d = np.matmul(T_gd(angles_g), g)
+    g_s = np.matmul(T_ds(beta), g_d)
+    g_w = np.matmul(T_sw(alpha), g_s)
+    
+    #calculate aerodynamic forces
+    drag = -0.5*rho*vel_d[0]**2*A*(C_D0 + C_Da*(alpha - alpha_0)**2)/m #-0.5*(rho*vel_w[0]**2)*C_drag(alpha)/m
+    lift = 0.5*rho*vel_d[0]**2*A*(C_L0 + C_La*alpha)/m  #0.5*(rho*vel_w[0]**2)*C_lift(alpha)/m
+    mom = 0.5*rho*A*2*r*vel_w[0]**2*(-0.01 + 0.057*alpha) #0.5*rho*S*c*vel_w[0]**2*C_M(alpha)
+    
+    #calculate acceleration
+    acl_w[0] = drag + g_w[0]
+    acl_w[1] = g_w[1]
+    acl_w[2] = lift + g_w[2]
+    
+    rot_s[0] = -2*mom/(Iz*omega)
+    
+    #transform to ground space
+    acl_s = np.matmul(T_ws(alpha), acl_w)
+    acl_d = np.matmul(T_sd(beta), acl_s)
+    acl_g = np.matmul(T_dg(angles_g), acl_d)
+    
+    rot_d = np.matmul(T_sd(beta),rot_s)
+    rot_g = np.matmul(T_dg(angles_g), rot_d)
+    
+    return acl_g, rot_g
+    
+
+"""
+------------------Define RK4 Function------------------
+"""
+
+def Rk4(vel, ang):
+    
+    #RK4 formula applied to the position and angle
+    k1 = Aero(vel, ang)
+    k1v = h*k1[0]
+    k1a = h*k1[1]
+    k1x = h*vel
+    
+    k2 = Aero(vel + 0.5*k1v, ang + 0.5*k1a)
+    k2v = h*k2[0]
+    k2a = h*k2[1]
+    k2x = h*(vel + 0.5*k1v)
+    
+    k3 = Aero(vel + 0.5*k2v, ang + 0.5*k2a)
+    k3v = h*k3[0]
+    k3a = h*k3[1]
+    k3x = h*(vel + 0.5*k2v)
+    
+    k4 = Aero(vel + k3v, ang + k3a)
+    k4v = h*k4[0]
+    k4a = h*k4[1]
+    k4x = h*(vel + k3v)
+    
+    #v represents the change in 'rate'
+    #x represents the change in 'position'
+    vel = (k1v + 2*k2v + 2*k3v + k4v)/6
+    ang = (k1a + 2*k2a + 2*k3a + k4a)/6
+    pos = (k1x + 2*k2x + 2*k3x + k4x)/6
+    
+    return vel, ang, pos
+
+"""
+------------------Define Input Function------------------
+"""
+
+def Input(vel, roll_angle, pitch_angle, launch_angle):
+    #initialize ground variables
+    vel_g = np.array([vel*np.cos(launch_angle), 0, vel*np.sin(launch_angle)])
+    
+    
+    #initialize disc variables
+    angles_g = np.array([roll_angle, pitch_angle,0]) #Roll angle, nose/pitch angle
+    angles_d = np.matmul(T_gd(angles_g), np.array([0,launch_angle,0]))
+    angles_g += angles_d
+    
+    return vel_g, angles_g
+
+
+"""
+------------------Calculate Frisbee Flight------------------
+"""
+
+vel_g, angles_g = Input(20.0, 4.0*np.pi/180, 8.0*np.pi/180, 10.0*np.pi/180)
+
+while pos_g[2] > 0:
+    #add to list
+    POS = np.concatenate((POS, [pos_g]))
+    V = np.concatenate((V, [vel_g]))
+    ACL = np.concatenate((ACL, [acl_g]))
+    ROT = np.concatenate((ROT, [rot_g]))
+    ANG = np.concatenate((ANG, [angles_g]))
+    T = np.append(T,t)
+    
+    #apply RK4
+    Output = Rk4(V[-1],ANG[-1])
+    vel_g += Output[0]
+    angles_g += Output[1]
+    pos_g += Output[2]
+    
+    #get acceleration and rotation for data
+    Output = Aero(V[-1], ANG[-1])
+    acl_g =  Output[0]
+    rot_g = Output[1]
+    
+    t += h
+
+global X, Y, Z
+X = POS[:,0]
+Y = POS[:,1]
+Z = POS[:,2] 
+
+# max_x = max(X)
+# max_y = max(Y)
+# max_val = float(max(max_x,max_y))
+
+fig = plt.figure()
+Ax = Axes3D(fig)
+Ax.set_xlabel('X axis')
+Ax.set_ylabel('Y axis')
+Ax.set_zlabel('Z axis')
+# Ax.set_xlim3d(0, max_val)
+# Ax.set_ylim3d(-max_val, max_val)
+Ax.set_xlim3d(0, 50)
+Ax.set_ylim3d(-25, 25)
+Ax.set_zlim3d(0,15)
+l = Ax.plot(X,Y, zs = Z, zdir = 'z')
+
+"""
+------------------Create Sliders and Buttons------------------
+"""
+
+#create sliders
+ax_vel = plt.axes([0.2, 0.1, 0.65, 0.02])
+slide_vel = Slider(ax_vel, 'Velocity (m/s)', 0.5, 50.0, valinit=20.0)
+
+ax_launch = plt.axes([0.2, 0.07, 0.65, 0.02])
+slide_launch = Slider(ax_launch, 'Launch Angle (degrees)', -90.0, 90.0, valinit=10.0)
+
+ax_roll = plt.axes([0.2, 0.04, 0.65, 0.02])
+slide_roll = Slider(ax_roll, 'Roll angle (degrees)', -180.0, 180.0, valinit=4.0)
+
+ax_pitch = plt.axes([0.2, 0.01, 0.65, 0.02])
+slide_pitch = Slider(ax_pitch, 'Nose Angle (degrees)', 0.0, 90.0, valinit=8.0)
+
+ax_spin = plt.axes([0.05, 0.3, 0.015, 0.63])
+slide_spin = Slider(ax_spin, "Spin (rotations/sec)", 0.0, 100.0, valinit=20.0, orientation="vertical")
+
+
+resetax = plt.axes([0.8,0.25,0.1,0.04])
+button = Button(resetax, 'Reset', hovercolor = '0.975')
+
+
+rax = plt.axes([0.025,0.135,0.15,0.1])
+radio = RadioButtons(rax, ('Backhand', 'Flick'), active = 0)
+
+"""
+------------------Define Update Function------------------
+"""
+
+def update(val): 
+    
+    #constants and such         
+    POS = np.zeros((1,3))
+    V = np.zeros((1,3))
+    ACL = np.zeros((1,3))
+    ROT = np.zeros((1,3))
+    ANG = np.zeros((1,3))
+    T = np.zeros(0)
+    
+    
+    #ground coordinates
+    pos_g = np.zeros(3)
+    pos_g[2] = 1.5 #starting height
+    vel_g = np.zeros(3)
+    acl_g = np.zeros(3)
+    angles_g = np.zeros(3)
+    rot_g = np.zeros(3)
+    
+    #disc coordinates
+    vel_d = np.zeros(3)
+    acl_d = np.zeros(3)
+    rot_d = np.zeros(3)
+    beta = 0
+    g_d = np.zeros(3)
+    
+    #slip coordinates
+    vel_s = np.zeros(3)
+    acl_s = np.zeros(3)
+    rot_s = np.zeros(3)
+    alpha = 0
+    g_s = np.zeros(3)
+    
+    #wind coordinates
+    vel_w = np.zeros(3)
+    acl_w = np.zeros(3)
+    g_w = np.zeros(3)
+    
+    #aerodynamic forces
+    drag = np.zeros(3)
+    lift = np.zeros(3)
+    mom = np.zeros(3)
+    
+    #take spin input
+    global omega
+    omega = 2*np.pi*slide_spin.val*s
+    
+    t = 0
+    
+    vel_g, angles_g = Input(slide_vel.val, slide_roll.val*np.pi/180, slide_pitch.val*np.pi/180, slide_launch.val*np.pi/180)
+    
+    #redo loop
+    while pos_g[2] > 0:
+        #add to list
+        POS = np.concatenate((POS, [pos_g]))
+        V = np.concatenate((V, [vel_g]))
+        ACL = np.concatenate((ACL, [acl_g]))
+        ROT = np.concatenate((ROT, [rot_g]))
+        ANG = np.concatenate((ANG, [angles_g]))
+        T = np.append(T,t)
+        
+        #apply RK4
+        Output = Rk4(V[-1],ANG[-1])
+        vel_g += Output[0]
+        angles_g += Output[1]
+        pos_g += Output[2]
+        
+        #get acceleration and rotaion for data
+        Output = Aero(V[-1], ANG[-1])
+        acl_g =  Output[0]
+        rot_g = Output[1]
+        
+        t += h
+    
+    
+    Ax.clear()
+    X_u = POS[:,0]
+    Y_u = POS[:,1]
+    Z_u = POS[:,2] 
+    
+    # max_x = max(X_u)
+    # max_y = max(Y_u)
+    # max_val = float(max(max_x,max_y))
+    
+    # Ax.set_xlim3d(0, max_val)
+    # Ax.set_ylim3d(-max_val, max_val)
+    Ax.set_xlim3d(0, 50)
+    Ax.set_ylim3d(-25, 25)
+    Ax.set_zlim3d(0,15)
+    l = Ax.plot(X_u,Y_u, zs = Z_u, zdir = 'z')
+    
+
+    fig.canvas.draw_idle()
+      
+#reset to initial conditions
+def reset(event):
+    slide_vel.reset()
+    slide_roll.reset()
+    slide_pitch.reset()
+    slide_launch.reset()
+    slide_spin.reset()
+    
+ 
+#flip from backhand to forhand
+def spin(a):
+    global s
+    s = -s
+
+#update graph with new variables
+slide_vel.on_changed(update)
+slide_roll.on_changed(update)
+slide_pitch.on_changed(update)
+slide_launch.on_changed(update)
+slide_spin.on_changed(update)
+
+radio.on_clicked(spin)
+radio.on_clicked(update)
+
+button.on_clicked(reset)
+
+# Ax.set_xlim3d(0, max_val)
+# Ax.set_ylim3d(-max_val, max_val)
+Ax.set_xlim3d(0, 50)
+Ax.set_ylim3d(-25, 25)
+Ax.set_zlim3d(0,15)
+
+
+plt.show()
